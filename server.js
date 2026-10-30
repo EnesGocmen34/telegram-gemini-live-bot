@@ -31,9 +31,10 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const WEBAPP_URL = process.env.WEBAPP_URL || `http://localhost:${PORT}`;
 const ADMIN_TELEGRAM_ID = (process.env.ADMIN_TELEGRAM_ID || '').trim();
 
-// Google API Uç Noktaları
-const GEMINI_FLASH_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+// Google API Uç Noktaları (Google'ın belirttiği güncel gemini-3.8-flash)
+const GEMINI_FLASH_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`;
 const GEMINI_TTS_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${GEMINI_API_KEY}`;
+
 
 // ----------------------------------------------------------------------------
 // 2. WHITELIST (İZİN VERİLEN KULLANICILAR)
@@ -192,9 +193,10 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
     const wavBuffer = Buffer.concat([wavHeader, pcmBuffer]);
     const base64Audio = wavBuffer.toString('base64');
 
-    console.log(`🧠 Gemini 2.5 Flash'a ses gönderiliyor (${pcmBuffer.length} bayt)...`);
+    console.log(`🧠 Gemini 3.8 Flash'a ses gönderiliyor (${pcmBuffer.length} bayt)...`);
 
-    // 2. Gemini 2.5 Flash ile Sesi Anla ve Metin Yanıtı Üret
+
+    // 2. Gemini 3.8 Flash ile Sesi Anla ve Yanıt Üret
     const flashResponse = await fetch(GEMINI_FLASH_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -222,17 +224,28 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
     });
 
     const flashData = await flashResponse.json();
-    const replyText = flashData.candidates?.[0]?.content?.parts?.[0]?.text;
+    let replyText = flashData.candidates?.[0]?.content?.parts?.[0]?.text;
+    let directAudioBase64 = flashData.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('audio'))?.inlineData?.data;
+
+    // Eğer doğrudan ses ürettiyse hemen onu kullan
+    if (directAudioBase64) {
+      console.log(`✅ Gemini 3.8 Flash doğrudan yerel ses üretti!`);
+      const audioBytes = Buffer.from(directAudioBase64, 'base64');
+      return {
+        replyText: replyText || 'Sesli yanıt',
+        audioBuffer: audioBytes
+      };
+    }
 
     if (!replyText) {
       console.warn('⚠️ Gemini metin üretemedi:', JSON.stringify(flashData));
       return null;
     }
 
-    console.log(`🤖 Gemini Yanıtı: "${replyText}"`);
+    console.log(`🤖 Gemini 3.8 Yanıtı: "${replyText}"`);
 
-    // 3. Gemini 2.5 Flash Native TTS ile Yanıtı Seslendir
-    console.log(`🔊 gemini-2.5-flash-preview-tts ile seslendiriliyor...`);
+    // 3. Metni TTS ile Seslendir
+    console.log(`🔊 Seslendirme yapılıyor...`);
     const ttsResponse = await fetch(GEMINI_TTS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -262,8 +275,9 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
         audioBuffer: audioBytes
       };
     } else {
-      console.warn('⚠️ TTS ses üretemedi:', JSON.stringify(ttsData));
+      console.warn('⚠️ TTS yanıtı:', JSON.stringify(ttsData));
     }
+
 
   } catch (err) {
     console.error('processVoiceTurn hatası:', err.message);
@@ -405,7 +419,8 @@ wss.on('connection', (clientWs, request) => {
 server.listen(PORT, () => {
   console.log(`\n======================================================`);
   console.log(`🚀 Telegram Gemini Sesli Asistanı Aktif!`);
-  console.log(`🧠 Zeka: gemini-2.5-flash`);
+  console.log(`🧠 Zeka: gemini-3.8-flash`);
+
   console.log(`🔊 Ses: gemini-2.5-flash-preview-tts`);
   console.log(`🔒 Admin ID: ${ADMIN_TELEGRAM_ID || 'TANIMLANMADI'}`);
   console.log(`🌐 Port: ${PORT}`);
