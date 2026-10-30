@@ -295,10 +295,21 @@ async function startCall() {
 
     // Sunucudan (Gemini'den) gelen yanıtları karşıla
     ws.onmessage = (event) => {
-      // 1. JSON Kontrol Mesajları (Interruption, Durum vb.)
+      // 1. JSON Kontrol Mesajları (Interruption, Durum, Yetki vb.)
       if (typeof event.data === 'string') {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'interrupted') {
+        if (msg.type === 'unauthorized') {
+          // Yetkisiz erişim uyarısı
+          setStatus('Erişim Reddedildi', 'default');
+          centerLabel.innerText = '🔒 Yetkisiz';
+          subCaption.innerHTML = '⛔ <b>Yetkisiz Erişim!</b><br>Bu asistan sadece yetkili kullanıcılara özeldir.<br>Kullanmak için bot sahibinden izin isteyin.';
+          mainCallBtn.style.display = 'none';
+          muteBtn.style.display = 'none';
+          if (mediaStream) mediaStream.getTracks().forEach(t => t.stop());
+          if (audioContext) audioContext.close();
+          return;
+        } else if (msg.type === 'interrupted') {
+
           // KULLANICI ARAYA GİRDİ! Yapay zekanın hoparlörde bekleyen seslerini derhal sustur
           workletNode.port.postMessage({ type: 'clear_audio' });
           aiEnergy = 0;
