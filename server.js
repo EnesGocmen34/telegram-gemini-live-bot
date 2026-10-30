@@ -30,8 +30,9 @@ const WEBAPP_URL = process.env.WEBAPP_URL || `http://localhost:${PORT}`;
 // Sizin Telegram Kullanıcı ID'niz (Botun sahibi / Yönetici)
 const ADMIN_TELEGRAM_ID = (process.env.ADMIN_TELEGRAM_ID || '').trim();
 
-// Google Gemini Canlı Ses WebSocket URL'si
-const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+// Google Gemini Canlı Ses WebSocket URL'si (Resmi v1beta BidiGenerateContent)
+const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+
 
 // ----------------------------------------------------------------------------
 // 2. WHITELIST (İZİN VERİLEN KULLANICILAR) YÖNETİMİ
@@ -346,16 +347,20 @@ wss.on('connection', (clientWs, request) => {
       geminiWs.send(JSON.stringify(setupMessage));
     });
 
-    // Gemini'den gelen ses parçalarını ve olayları dinle
-    geminiWs.on('message', (data) => {
-      try {
-        const response = JSON.parse(data.toString());
+  let chunkCount = 0;
 
-        // Hata durumunu yakala
-        if (response.error) {
-          console.error('❌ Gemini API Hatası:', JSON.stringify(response.error));
-          return;
-        }
+  // Gemini'den gelen ses parçalarını ve olayları dinle
+  geminiWs.on('message', (data) => {
+    try {
+      const response = JSON.parse(data.toString());
+      console.log('📥 Gemini Live Yanıtı:', JSON.stringify(response).substring(0, 250));
+
+      // Hata durumunu yakala
+      if (response.error) {
+        console.error('❌ Gemini API Hatası:', JSON.stringify(response.error));
+        return;
+      }
+
 
         // 1. Modelin ürettiği ham ses baytları (PCM)
         if (response.serverContent?.modelTurn?.parts) {
@@ -402,6 +407,9 @@ wss.on('connection', (clientWs, request) => {
 
   clientWs.on('message', (message, isBinary) => {
     if (isBinary) {
+      if (chunkCount++ % 50 === 0) {
+        console.log(`🎙️ Mikrofondan ses alınıyor ve Gemini'ye aktarılıyor (Paket #${chunkCount}, Boyut: ${message.length} bayt)...`);
+      }
       if (geminiWs && geminiWs.readyState === WebSocket.OPEN) {
         const base64Audio = message.toString('base64');
         geminiWs.send(JSON.stringify({
@@ -412,8 +420,13 @@ wss.on('connection', (clientWs, request) => {
             }]
           }
         }));
+      } else {
+        if (chunkCount % 50 === 0) {
+          console.warn('⚠️ Gemini Live WebSocket açık değil! Hazır durumu:', geminiWs?.readyState);
+        }
       }
     } else {
+
       try {
         const payload = JSON.parse(message.toString());
         if (payload.type === 'end_call') {
