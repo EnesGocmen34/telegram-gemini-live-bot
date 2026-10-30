@@ -34,6 +34,50 @@ const ADMIN_TELEGRAM_ID = (process.env.ADMIN_TELEGRAM_ID || '').trim();
 // Google Gemini Canlı Ses WebSocket URL'si (Resmi v1beta BidiGenerateContent)
 const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
 
+// Aktif Canlı Ses Modeli (Google ModelService tarafından dinamik olarak belirlenir)
+let activeLiveModel = process.env.GEMINI_LIVE_MODEL || '';
+
+/**
+ * Google ModelService API'sini sorgulayarak kullanıcının API anahtarıyla
+ * 'bidiGenerateContent' (canlı ses) destekleyen KESİN modelleri otomatik tespit eder.
+ */
+async function discoverLiveModel() {
+  if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_API_KEY') return;
+  try {
+    console.log('🔍 Google API taranıyor: bidiGenerateContent destekleyen resmi modeller sorgulanıyor...');
+    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${GEMINI_API_KEY}`);
+    const data = await response.json();
+
+    if (data.models && Array.isArray(data.models)) {
+      const bidiModels = data.models.filter(m => 
+        m.supportedGenerationMethods && 
+        m.supportedGenerationMethods.some(method => method.toLowerCase().includes('bidi'))
+      );
+
+      if (bidiModels.length > 0) {
+        console.log(`\n======================================================`);
+        console.log(`✅ Canlı Ses (Bidi) Destekleyen ${bidiModels.length} Model Doğrulandı:`);
+        bidiModels.forEach(m => console.log(`   👉 ${m.name}`));
+        // Listedeki ilk resmi canlı modeli seç
+        activeLiveModel = bidiModels[0].name;
+        console.log(`🎯 Aktif Olarak Bağlanılacak Model: ${activeLiveModel}`);
+        console.log(`======================================================\n`);
+      } else {
+        console.warn('⚠️ Hesabınızda bidiGenerateContent destekleyen model bulunamadı! Mevcut ilk 5 model:');
+        data.models.slice(0, 5).forEach(m => console.log(`   - ${m.name}`));
+        activeLiveModel = 'models/gemini-2.5-flash';
+      }
+    } else {
+      console.error('❌ Model listesi alınamadı:', JSON.stringify(data));
+      activeLiveModel = 'models/gemini-2.5-flash';
+    }
+  } catch (err) {
+    console.error('Model otomatik doğrulama hatası:', err.message);
+    activeLiveModel = 'models/gemini-2.5-flash';
+  }
+}
+
+
 
 
 
@@ -331,9 +375,12 @@ wss.on('connection', (clientWs, request) => {
 
 
     geminiWs.on('open', () => {
+      const targetModel = activeLiveModel.startsWith('models/') ? activeLiveModel : `models/${activeLiveModel}`;
+      console.log(`🚀 Gemini WebSocket Setup Gönderiliyor -> Model: ${targetModel}`);
+
       const setupMessage = {
         setup: {
-          model: `models/${GEMINI_LIVE_MODEL}`,
+          model: targetModel,
           generationConfig: {
             responseModalities: ['AUDIO'],
             speechConfig: {
@@ -351,6 +398,7 @@ wss.on('connection', (clientWs, request) => {
       };
       geminiWs.send(JSON.stringify(setupMessage));
     });
+
 
   // Gemini'den gelen ses parçalarını ve olayları dinle
   geminiWs.on('message', (data) => {
@@ -450,11 +498,15 @@ wss.on('connection', (clientWs, request) => {
 });
 
 // Sunucuyu başlat
-server.listen(PORT, () => {
+server.listen(PORT, async () => {
   console.log(`\n======================================================`);
   console.log(`🚀 Telegram Gemini Live Sunucusu Aktif!`);
   console.log(`🔒 Yönetici ID: ${ADMIN_TELEGRAM_ID || 'AYARLANMADI (Herkese Açık Mod)'}`);
   console.log(`🌐 Port: ${PORT}`);
   console.log(`📱 Mini App URL: ${WEBAPP_URL}`);
   console.log(`======================================================\n`);
+
+  // Google API'sinden canlı ses destekleyen modelleri tara ve doğrula
+  await discoverLiveModel();
 });
+
