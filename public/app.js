@@ -273,8 +273,16 @@ async function startCall() {
           if (msg.status === 'thinking') {
             setStatus('Gemini Düşünüyor...', 'speaking');
             subCaption.innerText = 'Cevap hazırlanıyor...';
+            clearTimeout(window.thinkingTimeout);
+            window.thinkingTimeout = setTimeout(() => {
+              if (!isAiSpeaking) {
+                setStatus('Dinliyor...', 'active');
+                subCaption.innerText = 'Sizi dinliyor, tekrar konuşabilirsiniz...';
+              }
+            }, 14000);
           }
         }
+
       } else if (event.data instanceof ArrayBuffer) {
         // Gelen ses parçasını çal
         await playAudioBuffer(event.data);

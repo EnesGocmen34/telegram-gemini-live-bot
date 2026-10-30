@@ -195,15 +195,18 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
 
     console.log(`🧠 Gemini 3.8 Flash'a ses gönderiliyor (${pcmBuffer.length} bayt)...`);
 
+    // 2. Gemini 3.8 Flash ile Sesi Anla ve Yanıt Üret (12 sn Timeout Korumalı)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12000);
 
-    // 2. Gemini 3.8 Flash ile Sesi Anla ve Yanıt Üret
     const flashResponse = await fetch(GEMINI_FLASH_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
       body: JSON.stringify({
         systemInstruction: {
           parts: [{
-            text: "Sen Telegram üzerinden sesli olarak konuşan akıllı, samimi ve nazik bir yapay zeka asistanısın. Türkçe konuşuyorsun. Cevapların doğrudan konuşma dilinde, kısa, net ve akıcı olsun (en fazla 2-3 cümle). Kullanıcının sesini dikkatle dinle ve ona uygun yanıt ver."
+            text: "Sen Telegram üzerinden sesli konuşan Türkçe akıllı bir yapay zeka asistanısın. Kullanıcının sesini dinle ve kısa, net, konuşma dilinde samimi bir Türkçe yanıt ver (en fazla 2 cümle)."
           }]
         },
         contents: [
@@ -216,12 +219,18 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
                   mimeType: "audio/wav",
                   data: base64Audio
                 }
+              },
+              {
+                text: "Kullanıcının konuşmasını dinle ve Türkçe cevap ver."
               }
             ]
           }
         ]
       })
     });
+
+    clearTimeout(timeoutId);
+    console.log(`📡 Gemini 3.8 HTTP Kodu: ${flashResponse.status}`);
 
     const flashData = await flashResponse.json();
     let replyText = flashData.candidates?.[0]?.content?.parts?.[0]?.text;
@@ -244,11 +253,15 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
 
     console.log(`🤖 Gemini 3.8 Yanıtı: "${replyText}"`);
 
-    // 3. Metni TTS ile Seslendir
+    // 3. Metni TTS ile Seslendir (10 sn Timeout Korumalı)
     console.log(`🔊 Seslendirme yapılıyor...`);
+    const ttsController = new AbortController();
+    const ttsTimeoutId = setTimeout(() => ttsController.abort(), 10000);
+
     const ttsResponse = await fetch(GEMINI_TTS_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: ttsController.signal,
       body: JSON.stringify({
         contents: [{
           parts: [{ text: replyText }]
@@ -263,6 +276,10 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
         }
       })
     });
+
+    clearTimeout(ttsTimeoutId);
+    console.log(`📡 TTS HTTP Kodu: ${ttsResponse.status}`);
+
 
     const ttsData = await ttsResponse.json();
     const audioBase64 = ttsData.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
