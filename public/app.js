@@ -118,10 +118,30 @@ function setStatus(text, state = 'default') {
 }
 
 /**
+ * Ses frekansı dönüştürücü (Resampler)
+ * Gelen ses dizisini kaynak frekanstan (örneğin 48kHz) hedef frekansa (16kHz) pürüzsüzce dönüştürür.
+ */
+function resampleAudio(audioBuffer, fromSampleRate, toSampleRate) {
+  if (fromSampleRate === toSampleRate) return audioBuffer;
+  const ratio = fromSampleRate / toSampleRate;
+  const newLength = Math.round(audioBuffer.length / ratio);
+  const result = new Float32Array(newLength);
+  for (let i = 0; i < newLength; i++) {
+    const originIndex = i * ratio;
+    const indexFloor = Math.floor(originIndex);
+    const indexCeil = Math.min(audioBuffer.length - 1, indexFloor + 1);
+    const fraction = originIndex - indexFloor;
+    result[i] = audioBuffer[indexFloor] * (1 - fraction) + audioBuffer[indexCeil] * fraction;
+  }
+  return result;
+}
+
+/**
  * Mikrofondan gelen Float32 ses verilerini, Gemini Live API'nin anladığı
  * 16-bit Little-Endian Linear PCM baytlarına dönüştürür.
  */
 function floatTo16BitPCM(float32Array) {
+
   const buffer = new ArrayBuffer(float32Array.length * 2);
   const view = new DataView(buffer);
   let offset = 0;
@@ -235,7 +255,14 @@ async function startCall() {
     audioContext = new (window.AudioContext || window.webkitAudioContext)({
       sampleRate: TARGET_SAMPLE_RATE
     });
+
+    // Mobil tarayıcılarda ses çalabilmek için kilidi aç (Unlock audio context)
+    if (audioContext.state === 'suspended') {
+      await audioContext.resume();
+    }
+
     await audioContext.audioWorklet.addModule('audio-worklet-processor.js');
+
 
     // 2. Kullanıcının mikrofonuna bağlan (Yankı ve gürültü engelleme donanımı açık)
     mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -278,7 +305,7 @@ async function startCall() {
     // Mikrofondan gelen ses baytlarını AudioWorklet'ten yakalayıp sunucuya pompala
     workletNode.port.onmessage = (event) => {
       if (event.data.type === 'mic_data' && ws && ws.readyState === WebSocket.OPEN && !isMuted) {
-        const floatSamples = event.data.samples;
+        let floatSamples = event.data.samples;
         
         // Ses dalgası animasyonu için enerji hesapla
         let sum = 0;
@@ -287,11 +314,17 @@ async function startCall() {
         }
         userEnergy = Math.max(userEnergy, sum / floatSamples.length * 5);
 
+        // Eğer donanım sampleRate'i 16000 değilse (örneğin 44100 veya 48000 ise) 16000'e pürüzsüz dönüştür
+        if (audioContext && audioContext.sampleRate !== TARGET_SAMPLE_RATE) {
+          floatSamples = resampleAudio(floatSamples, audioContext.sampleRate, TARGET_SAMPLE_RATE);
+        }
+
         // 16-bit PCM Linear formatına çevir ve WebSocket üzerinden sunucuya gönder
         const pcmBuffer = floatTo16BitPCM(floatSamples);
         ws.send(pcmBuffer);
       }
     };
+
 
     // Sunucudan (Gemini'den) gelen yanıtları karşıla
     ws.onmessage = (event) => {
@@ -325,7 +358,13 @@ async function startCall() {
       // 2. Binary Ses Verisi (Gemini'nin konuşma sesi)
       else if (event.data instanceof ArrayBuffer) {
         const dataView = new DataView(event.data);
-        const float32Samples = pcm16ToFloat32(dataView);
+        let float32Samples = pcm16ToFloat32(dataView);
+
+        // Gemini çıktısı varsayılan olarak 24000 Hz gelir, telefonun donanım frekansına pürüzsüzce dönüştür
+        const GEMINI_OUTPUT_RATE = 24000;
+        if (audioContext && audioContext.sampleRate !== GEMINI_OUTPUT_RATE) {
+          float32Samples = resampleAudio(float32Samples, GEMINI_OUTPUT_RATE, audioContext.sampleRate);
+        }
 
         // AI ses enerjisini hesapla (kürenin titreşmesi için)
         let sum = 0;
@@ -340,6 +379,7 @@ async function startCall() {
           samples: float32Samples
         });
       }
+
     };
 
     ws.onclose = () => {

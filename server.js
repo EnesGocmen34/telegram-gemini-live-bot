@@ -24,7 +24,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
-const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || 'gemini-3.8-live';
+const GEMINI_LIVE_MODEL = process.env.GEMINI_LIVE_MODEL || 'gemini-2.0-flash-exp';
 const WEBAPP_URL = process.env.WEBAPP_URL || `http://localhost:${PORT}`;
 
 // Sizin Telegram Kullanıcı ID'niz (Botun sahibi / Yönetici)
@@ -346,42 +346,58 @@ wss.on('connection', (clientWs, request) => {
       geminiWs.send(JSON.stringify(setupMessage));
     });
 
+    // Gemini'den gelen ses parçalarını ve olayları dinle
     geminiWs.on('message', (data) => {
       try {
         const response = JSON.parse(data.toString());
 
+        // Hata durumunu yakala
+        if (response.error) {
+          console.error('❌ Gemini API Hatası:', JSON.stringify(response.error));
+          return;
+        }
+
+        // 1. Modelin ürettiği ham ses baytları (PCM)
         if (response.serverContent?.modelTurn?.parts) {
           for (const part of response.serverContent.modelTurn.parts) {
             if (part.inlineData && part.inlineData.mimeType?.startsWith('audio/pcm')) {
               const audioBuffer = Buffer.from(part.inlineData.data, 'base64');
+              // Sesi gecikmesiz olarak kullanıcının hoparlörüne (Mini App'e) aktar
               if (clientWs.readyState === WebSocket.OPEN) {
                 clientWs.send(audioBuffer);
               }
             }
             if (part.text) {
+              console.log('🤖 Gemini Metin:', part.text);
               transcripts.push({ speaker: 'Gemini', text: part.text });
             }
           }
         }
 
+        // 2. Söz Kesme (Interruption): Kullanıcı model konuşurken lafa girdiğinde tetiklenir
         if (response.serverContent?.interrupted) {
+          console.log('⚡ Interruption: Kullanıcı araya girdi.');
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ type: 'interrupted' }));
           }
         }
 
+        // 3. Model konuşmasını bitirdiğinde
         if (response.serverContent?.turnComplete) {
           if (clientWs.readyState === WebSocket.OPEN) {
             clientWs.send(JSON.stringify({ type: 'status', status: 'listening' }));
           }
         }
       } catch (err) {
-        console.error('Gemini WS parse hatası:', err.message);
+        console.error('Gemini WS yanıt işleme hatası:', err.message);
       }
     });
 
-    geminiWs.on('error', (err) => console.error('Gemini WS Hatası:', err.message));
-    geminiWs.on('close', () => console.log('Gemini Live WS kapandı.'));
+    geminiWs.on('error', (err) => console.error('❌ Gemini Live WebSocket Hatası:', err.message));
+    geminiWs.on('close', (code, reason) => {
+      console.log(`⚠️ Gemini Live WS kapandı. Kod: ${code}, Sebep: ${reason?.toString() || 'Bilinmiyor'}`);
+    });
+
   }
 
   clientWs.on('message', (message, isBinary) => {
