@@ -31,9 +31,75 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const WEBAPP_URL = process.env.WEBAPP_URL || `http://localhost:${PORT}`;
 const ADMIN_TELEGRAM_ID = (process.env.ADMIN_TELEGRAM_ID || '').trim();
 
-// Google API Uç Noktaları (Google'ın belirttiği güncel gemini-3.8-flash)
-const GEMINI_FLASH_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key=${GEMINI_API_KEY}`;
+// Google API Modelleri (503 Yoğunluk durumunda otomatik geçiş yapılacak modeller)
+const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.8-pro', 'gemini-2.5-pro'];
 const GEMINI_TTS_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${GEMINI_API_KEY}`;
+
+/**
+ * Gemini modelleri arasında otomatik geçiş yaparak sesi analiz eder (503 High Demand Korumalı)
+ */
+async function callGeminiAudioModel(base64Audio, conversationHistory) {
+  for (const modelName of FALLBACK_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${GEMINI_API_KEY}`;
+    try {
+      console.log(`🧠 [${modelName}] modeline ses gönderiliyor...`);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+        body: JSON.stringify({
+          systemInstruction: {
+            parts: [{
+              text: "Sen Telegram üzerinden sesli konuşan Türkçe akıllı bir yapay zeka asistanısın. Kullanıcının konuşmasını dinle ve kısa, net, konuşma dilinde samimi bir Türkçe yanıt ver (en fazla 2 cümle)."
+            }]
+          },
+          contents: [
+            ...conversationHistory,
+            {
+              role: "user",
+              parts: [
+                {
+                  inlineData: {
+                    mimeType: "audio/wav",
+                    data: base64Audio
+                  }
+                },
+                {
+                  text: "Kullanıcının konuşmasını dinle ve Türkçe cevap ver."
+                }
+              ]
+            }
+          ]
+        })
+      });
+
+      clearTimeout(timeoutId);
+      console.log(`📡 [${modelName}] HTTP Kodu: ${response.status}`);
+
+      if (response.status === 503) {
+        console.warn(`⚠️ [${modelName}] aşırı yoğun (503). Hemen bir sonraki yedek modele geçiliyor...`);
+        continue; // Bir sonraki modele geç
+      }
+
+      const data = await response.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      const directAudio = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('audio'))?.inlineData?.data;
+
+      if (text || directAudio) {
+        return { text, directAudio, usedModel: modelName };
+      } else {
+        console.warn(`⚠️ [${modelName}] yanıt dönmedi:`, JSON.stringify(data));
+      }
+    } catch (err) {
+      console.warn(`⚠️ [${modelName}] çağrı hatası (${err.message}), sıradaki modele geçiliyor...`);
+    }
+  }
+  return null;
+}
+
 
 
 // ----------------------------------------------------------------------------
@@ -193,52 +259,19 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
     const wavBuffer = Buffer.concat([wavHeader, pcmBuffer]);
     const base64Audio = wavBuffer.toString('base64');
 
-    console.log(`🧠 Gemini 3.8 Flash'a ses gönderiliyor (${pcmBuffer.length} bayt)...`);
+    // 2. Modelleri 503/Yoğunluk Korumasıyla Çağır
+    const aiResult = await callGeminiAudioModel(base64Audio, conversationHistory);
+    if (!aiResult) {
+      console.warn('⚠️ Hiçbir modelden ses/metin yanıtı alınamadı.');
+      return null;
+    }
 
-    // 2. Gemini 3.8 Flash ile Sesi Anla ve Yanıt Üret (12 sn Timeout Korumalı)
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 12000);
+    const replyText = aiResult.text;
+    const directAudioBase64 = aiResult.directAudio;
 
-    const flashResponse = await fetch(GEMINI_FLASH_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        systemInstruction: {
-          parts: [{
-            text: "Sen Telegram üzerinden sesli konuşan Türkçe akıllı bir yapay zeka asistanısın. Kullanıcının sesini dinle ve kısa, net, konuşma dilinde samimi bir Türkçe yanıt ver (en fazla 2 cümle)."
-          }]
-        },
-        contents: [
-          ...conversationHistory,
-          {
-            role: "user",
-            parts: [
-              {
-                inlineData: {
-                  mimeType: "audio/wav",
-                  data: base64Audio
-                }
-              },
-              {
-                text: "Kullanıcının konuşmasını dinle ve Türkçe cevap ver."
-              }
-            ]
-          }
-        ]
-      })
-    });
-
-    clearTimeout(timeoutId);
-    console.log(`📡 Gemini 3.8 HTTP Kodu: ${flashResponse.status}`);
-
-    const flashData = await flashResponse.json();
-    let replyText = flashData.candidates?.[0]?.content?.parts?.[0]?.text;
-    let directAudioBase64 = flashData.candidates?.[0]?.content?.parts?.find(p => p.inlineData?.mimeType?.startsWith('audio'))?.inlineData?.data;
-
-    // Eğer doğrudan ses ürettiyse hemen onu kullan
+    // Eğer model doğrudan ses ürettiyse onu kullan
     if (directAudioBase64) {
-      console.log(`✅ Gemini 3.8 Flash doğrudan yerel ses üretti!`);
+      console.log(`✅ [${aiResult.usedModel}] doğrudan yerel ses üretti!`);
       const audioBytes = Buffer.from(directAudioBase64, 'base64');
       return {
         replyText: replyText || 'Sesli yanıt',
@@ -247,11 +280,10 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
     }
 
     if (!replyText) {
-      console.warn('⚠️ Gemini metin üretemedi:', JSON.stringify(flashData));
       return null;
     }
 
-    console.log(`🤖 Gemini 3.8 Yanıtı: "${replyText}"`);
+    console.log(`🤖 Model Yanıtı (${aiResult.usedModel}): "${replyText}"`);
 
     // 3. Metni TTS ile Seslendir (10 sn Timeout Korumalı)
     console.log(`🔊 Seslendirme yapılıyor...`);
@@ -279,6 +311,7 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
 
     clearTimeout(ttsTimeoutId);
     console.log(`📡 TTS HTTP Kodu: ${ttsResponse.status}`);
+
 
 
     const ttsData = await ttsResponse.json();
