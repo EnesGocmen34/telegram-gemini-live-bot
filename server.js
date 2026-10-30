@@ -30,8 +30,9 @@ const WEBAPP_URL = process.env.WEBAPP_URL || `http://localhost:${PORT}`;
 // Sizin Telegram Kullanıcı ID'niz (Botun sahibi / Yönetici)
 const ADMIN_TELEGRAM_ID = (process.env.ADMIN_TELEGRAM_ID || '').trim();
 
-// Google Gemini Canlı Ses WebSocket URL'si (Resmi v1beta BidiGenerateContent)
-const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+// Google Gemini Canlı Ses WebSocket URL'si (v1alpha)
+const GEMINI_WS_URL = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${GEMINI_API_KEY}`;
+
 
 
 // ----------------------------------------------------------------------------
@@ -320,10 +321,12 @@ wss.on('connection', (clientWs, request) => {
 
   const transcripts = [];
   let duration = 0;
+  let chunkCount = 0;
   let geminiWs = null;
 
   if (GEMINI_API_KEY && GEMINI_API_KEY !== 'YOUR_GEMINI_API_KEY') {
     geminiWs = new WebSocket(GEMINI_WS_URL);
+
 
     geminiWs.on('open', () => {
       const setupMessage = {
@@ -347,10 +350,9 @@ wss.on('connection', (clientWs, request) => {
       geminiWs.send(JSON.stringify(setupMessage));
     });
 
-  let chunkCount = 0;
-
   // Gemini'den gelen ses parçalarını ve olayları dinle
   geminiWs.on('message', (data) => {
+
     try {
       const response = JSON.parse(data.toString());
       console.log('📥 Gemini Live Yanıtı:', JSON.stringify(response).substring(0, 250));
