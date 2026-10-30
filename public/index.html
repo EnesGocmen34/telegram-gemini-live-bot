@@ -1,0 +1,292 @@
+<!DOCTYPE html>
+<!--
+  ============================================================================
+  DOSYA ADI: index.html
+  AMACI: Telegram Mini App Arayüzü (Gemini Live Görüşme Ekranı)
+  ============================================================================
+  Bu dosya, kullanıcının Telegram'da "Canlı Asistanı Başlat" butonuna bastığında
+  karşısına tam ekran olarak açılan web arayüzüdür.
+  
+  Özellikleri:
+  - Telegram temasıyla tam uyumlu OLED siyah / koyu mavi estetik tasarım.
+  - Canlı parlayan dinamik ses küresi (Glowing Orb ve Waveform Canvas).
+  - Görüşme süresi sayacı (00:00).
+  - Sessize alma (Mute) ve Görüşmeyi Sonlandırma (Kırmızı Buton) kontrolleri.
+  - Mobil cihazlarda ekran ölçekleme ve kaydırmayı kilitleyen optimize viewport.
+  ============================================================================
+-->
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <!-- Mobil cihazlarda çift tıklama ile zoom yapmayı engelleyip uygulama gibi hissettiren viewport ayarı -->
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <title>Gemini Live Asistan</title>
+
+  <!-- Telegram Resmi WebApp JavaScript SDK: Telegram ortamını ve renklerini kontrol etmeyi sağlar -->
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+
+  <style>
+    /* ------------------------------------------------------------------------
+       GENEL SIFIRLAMA VE TEMEL STİLLER
+       ------------------------------------------------------------------------ */
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent; /* Mobilde dokunurken çıkan mavi gölgeyi kapatır */
+      user-select: none; /* Metin seçilmesini engeller, saf native uygulama hissi verir */
+    }
+
+    body {
+      background-color: #0b0f19; /* Derin uzay siyahı / koyu lacivert */
+      color: #f1f5f9;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      padding: 24px 20px 40px;
+      overflow: hidden; /* Sayfa kaydırmasını engeller */
+    }
+
+    /* ------------------------------------------------------------------------
+       ÜST PANEL: DURUM VE ZAMANLAYICI
+       ------------------------------------------------------------------------ */
+    .header {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      margin-top: 12px;
+      z-index: 10;
+    }
+
+    /* Durum hapı (Badge): "Dinliyor...", "Gemini Konuşuyor..." gibi durumları gösterir */
+    .badge-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      backdrop-filter: blur(8px);
+      padding: 6px 14px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      letter-spacing: 0.3px;
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      transition: all 0.3s ease;
+    }
+
+    /* Durumun yanındaki küçük yanan ışık (Dot) */
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #94a3b8; /* Pasif gri */
+      transition: background 0.3s ease;
+    }
+
+    /* Kullanıcı dinlenirken yanan yeşil ışık */
+    .status-dot.active {
+      background: #10b981;
+      box-shadow: 0 0 10px #10b981;
+      animation: pulse 1.5s infinite;
+    }
+
+    /* Gemini konuşurken yanan mor/mavi ışık */
+    .status-dot.speaking {
+      background: #8b5cf6;
+      box-shadow: 0 0 12px #8b5cf6;
+      animation: pulse 1s infinite;
+    }
+
+    /* Arama süresi sayacı */
+    .call-time {
+      font-size: 14px;
+      color: #94a3b8;
+      font-variant-numeric: tabular-nums; /* Sayıların genişliği eşit kalır, zıplama yapmaz */
+    }
+
+    /* ------------------------------------------------------------------------
+       ORTA PANEL: GEMINI LIVE PARLAYAN KÜRE VE SES GÖRSELLEŞTİRİCİ
+       ------------------------------------------------------------------------ */
+    .visualizer-container {
+      position: relative;
+      width: 260px;
+      height: 260px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      margin: auto 0;
+    }
+
+    /* Arkada hafifçe parlayan organik renk bulutu (Glow Backdrop) */
+    .glow-backdrop {
+      position: absolute;
+      width: 180px;
+      height: 180px;
+      border-radius: 50%;
+      background: radial-gradient(circle, rgba(56, 189, 248, 0.25) 0%, rgba(139, 92, 246, 0.15) 50%, transparent 70%);
+      filter: blur(28px);
+      transition: transform 0.2s ease, opacity 0.3s ease;
+      pointer-events: none;
+    }
+
+    /* 60 FPS GPU ile çizilen ses dalgası tuvali */
+    canvas#visualizer {
+      position: absolute;
+      width: 100%;
+      height: 100%;
+      z-index: 5;
+    }
+
+    /* Kürenin ortasında duran metin ("Gemini Live", "Dinliyor...") */
+    .center-label {
+      position: absolute;
+      z-index: 6;
+      font-size: 15px;
+      font-weight: 600;
+      color: #e2e8f0;
+      text-align: center;
+      pointer-events: none;
+      transition: opacity 0.3s ease;
+    }
+
+    /* ------------------------------------------------------------------------
+       ALT PANEL: BUTONLAR VE KONTROLLER
+       ------------------------------------------------------------------------ */
+    .controls {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 32px;
+      width: 100%;
+      max-width: 320px;
+      z-index: 10;
+    }
+
+    /* Yuvarlak butonların ortak stili */
+    .btn-circle {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      border: none;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      cursor: pointer;
+      outline: none;
+      transition: transform 0.15s ease, background-color 0.2s ease, box-shadow 0.2s ease;
+    }
+
+    .btn-circle:active {
+      transform: scale(0.92); /* Tıklanma animasyonu */
+    }
+
+    /* Sessize alma (Mute) butonu */
+    .btn-mute {
+      background: rgba(255, 255, 255, 0.12);
+      color: #f1f5f9;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+    }
+
+    /* Sessize alındığında turuncu parlayan durum */
+    .btn-mute.muted {
+      background: #f59e0b;
+      color: #000;
+      border-color: #f59e0b;
+    }
+
+    /* Kırmızı "Aramayı Bitir" butonu */
+    .btn-end {
+      background: #ef4444;
+      color: #ffffff;
+      box-shadow: 0 4px 20px rgba(239, 68, 68, 0.45);
+    }
+
+    .btn-end:hover {
+      background: #dc2626;
+    }
+
+    /* Mavi "Görüşmeyi Başlat" butonu */
+    .btn-start {
+      background: #3b82f6;
+      color: #ffffff;
+      box-shadow: 0 4px 20px rgba(59, 130, 246, 0.45);
+    }
+
+    .btn-icon {
+      width: 28px;
+      height: 28px;
+      fill: currentColor;
+    }
+
+    /* En alttaki bilgilendirici alt metin */
+    .caption {
+      margin-top: 16px;
+      font-size: 13px;
+      color: #64748b;
+      text-align: center;
+      line-height: 1.4;
+    }
+
+    /* Nabız (Pulse) animasyonu */
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.6; transform: scale(0.95); }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- ======================================================================
+       1. ÜST BİLGİ ALANI: DURUM VE SÜRE SAYACI
+       ====================================================================== -->
+  <div class="header">
+    <div id="statusBadge" class="badge-status">
+      <span id="statusDot" class="status-dot"></span>
+      <span id="statusText">Başlamaya Hazır</span>
+    </div>
+    <div id="callTimer" class="call-time">00:00</div>
+  </div>
+
+  <!-- ======================================================================
+       2. ORTA ALAN: CANLI SES DALGASI VE PARLAYAN GEMINI KÜRESİ
+       ====================================================================== -->
+  <div class="visualizer-container">
+    <div id="glowBackdrop" class="glow-backdrop"></div>
+    <canvas id="visualizer" width="520" height="520"></canvas>
+    <div id="centerLabel" class="center-label">Gemini Live</div>
+  </div>
+
+  <!-- ======================================================================
+       3. ALT ALAN: KULLANICI KONTROL BUTONLARI
+       ====================================================================== -->
+  <div>
+    <div class="controls">
+      <!-- Mikrofonu Sessize Alma (Mute) Butonu -->
+      <button id="muteBtn" class="btn-circle btn-mute" title="Sessize Al" style="display: none;">
+        <svg id="micIcon" class="btn-icon" viewBox="0 0 24 24">
+          <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
+          <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+        </svg>
+      </button>
+
+      <!-- Ana Buton: İlk başta "Görüşmeyi Başlat", arama başlayınca "Görüşmeyi Bitir" olur -->
+      <button id="mainCallBtn" class="btn-circle btn-start" title="Görüşmeyi Başlat">
+        <svg id="callIcon" class="btn-icon" viewBox="0 0 24 24">
+          <!-- Standart Yeşil/Mavi Telefon Ahizesi İkonu -->
+          <path d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/>
+        </svg>
+      </button>
+    </div>
+
+    <!-- Bilgilendirici Alt Metin -->
+    <p id="subCaption" class="caption">Görüşmeyi başlatmak için butona dokunun.<br>Bittiğinde özet Telegram sohbetinize gelir.</p>
+  </div>
+
+  <!-- Ön yüz JavaScript mantığı ve ses işleme dosyasını dahil et -->
+  <script src="app.js"></script>
+</body>
+</html>

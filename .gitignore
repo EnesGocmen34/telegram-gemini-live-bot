@@ -1,0 +1,12 @@
+# Bağımlılıklar (GitHub'a yüklenmemeli, sunucuda npm install ile kurulur)
+node_modules/
+
+# Gizli API Anahtarları (Bot Token ve Gemini Key asla GitHub'a gitmemelidir!)
+.env
+
+# İşletim sistemi ve log dosyaları
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
