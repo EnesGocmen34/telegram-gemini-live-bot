@@ -31,12 +31,12 @@ const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
 const WEBAPP_URL = process.env.WEBAPP_URL || `http://localhost:${PORT}`;
 const ADMIN_TELEGRAM_ID = (process.env.ADMIN_TELEGRAM_ID || '').trim();
 
-// Google API Modelleri (503 Yoğunluk durumunda otomatik geçiş yapılacak modeller)
-const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.8-pro', 'gemini-2.5-pro'];
+// Google API Modelleri (Google'ın önerdiği güncel modeller)
+const FALLBACK_MODELS = ['gemini-3.8-flash', 'gemini-3.1-pro-preview'];
 const GEMINI_TTS_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${GEMINI_API_KEY}`;
 
 /**
- * Gemini modelleri arasında otomatik geçiş yaparak sesi analiz eder (503 High Demand Korumalı)
+ * Gemini modelleri arasında otomatik geçiş yaparak sesi analiz eder (Genişletilmiş Timeout Korumalı)
  */
 async function callGeminiAudioModel(base64Audio, conversationHistory) {
   for (const modelName of FALLBACK_MODELS) {
@@ -44,7 +44,8 @@ async function callGeminiAudioModel(base64Audio, conversationHistory) {
     try {
       console.log(`🧠 [${modelName}] modeline ses gönderiliyor...`);
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      // Ses analizi için yeterli süre tanı (25 saniye)
+      const timeoutId = setTimeout(() => controller.abort(), 25000);
 
       const response = await fetch(url, {
         method: 'POST',
@@ -78,6 +79,7 @@ async function callGeminiAudioModel(base64Audio, conversationHistory) {
 
       clearTimeout(timeoutId);
       console.log(`📡 [${modelName}] HTTP Kodu: ${response.status}`);
+
 
       if (response.status === 503) {
         console.warn(`⚠️ [${modelName}] aşırı yoğun (503). Hemen bir sonraki yedek modele geçiliyor...`);
@@ -285,10 +287,11 @@ async function processVoiceTurn(pcmBuffer, conversationHistory) {
 
     console.log(`🤖 Model Yanıtı (${aiResult.usedModel}): "${replyText}"`);
 
-    // 3. Metni TTS ile Seslendir (10 sn Timeout Korumalı)
+    // 3. Metni TTS ile Seslendir (18 sn Timeout Korumalı)
     console.log(`🔊 Seslendirme yapılıyor...`);
     const ttsController = new AbortController();
-    const ttsTimeoutId = setTimeout(() => ttsController.abort(), 10000);
+    const ttsTimeoutId = setTimeout(() => ttsController.abort(), 18000);
+
 
     const ttsResponse = await fetch(GEMINI_TTS_URL, {
       method: 'POST',
